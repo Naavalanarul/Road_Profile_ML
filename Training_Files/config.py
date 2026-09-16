@@ -47,7 +47,16 @@ PHASE1_LR = 1e-3
 PHASE2_LR = 1e-5
 UNFREEZE_LAST_N_BLOCKS = 3
 CHECKPOINT_PATH = "road_severity_model.pt"
-DEVICE = "cuda" 
+
+def get_device():
+    import torch
+    if torch.backends.mps.is_available():
+        return "mps"
+    if torch.cuda.is_available():
+        return "cuda"
+    return "cpu"
+
+DEVICE = get_device()
 
 USE_ORDINAL_LOSS = True
 

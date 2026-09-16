@@ -147,7 +147,7 @@ def run_epoch(model, loader, criterion, optimizer, device, train: bool):
 
 
 def main():
-    device = torch.device(config.DEVICE if torch.cuda.is_available() else "cpu")
+    device = torch.device(config.DEVICE)
     print(f"Using device: {device}")
 
     train_ds = RoadSeverityDataset(config.TRAIN_CSV, train=True)

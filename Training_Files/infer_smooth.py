@@ -145,7 +145,7 @@ def main():
 
     source = int(args.source) if args.source.isdigit() else args.source
 
-    device = torch.device(config.DEVICE if torch.cuda.is_available() else "cpu")
+    device = torch.device(config.DEVICE)
     model = load_model(device)
     transform = get_infer_transform()
     state_machine = SeverityStateMachine()
