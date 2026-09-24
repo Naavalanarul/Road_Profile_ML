@@ -6,7 +6,7 @@ for a first run.
 
 import os
 
-RDD2022_ROOT = os.environ.get("RDD2022_ROOT", "/Users/naavalanarul/Documents/Road_Profile_ML/Dataset/21431547/RDD2022")
+RDD2022_ROOT = os.environ.get("RDD2022_ROOT", "/Users/naavalanarul/Documents/Projects/Road_Profile_ML/Dataset/21431547/RDD2022")
 
 COUNTRIES = ["India", "Japan", "United_States", "Czech", "Norway"]
 
@@ -26,7 +26,7 @@ IDX_TO_CLASS = {i: c for c, i in CLASS_TO_IDX.items()}
 POTHOLE_CODES = {"D40"}
 SEVERE_CRACK_CODES = {"D20"}
 MINOR_CRACK_CODES = {"D00", "D01", "D10", "D11"}
-IGNORED_CODES = {"D43", "D44", "D50"} 
+IGNORED_CODES = {"D43", "D44", "D50"}
 
 DAMAGE_WEIGHTS = {
     "pothole": 3.0,
@@ -34,9 +34,9 @@ DAMAGE_WEIGHTS = {
     "minor_crack": 1.0,
 }
 
-NORMAL_MAX_SCORE = 0.02 
+NORMAL_MAX_SCORE = 0.02
 
-ROI_BOTTOM_FRACTION = 0.35  
+ROI_BOTTOM_FRACTION = 0.35
 
 IMG_SIZE = 224
 BATCH_SIZE = 32
