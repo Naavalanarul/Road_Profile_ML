@@ -1,3 +1,4 @@
 /Dataset
 /Training_Files/__pycache__
 .csv
+Training_Files/road_severity_model_fold*.pt
