@@ -69,8 +69,8 @@ ROI_BOTTOM_FRACTION = 0.35
 # Model input (height, width). The ROI strip is wide, so keep its aspect
 # ratio instead of squashing it into a square. Cracks are thin: more
 # resolution helps. 192x512 is a good start; try 224x640 if memory allows.
-INPUT_HEIGHT = 192
-INPUT_WIDTH = 512
+INPUT_HEIGHT = 256
+INPUT_WIDTH = 768
 IMG_SIZE = (INPUT_HEIGHT, INPUT_WIDTH)   # kept for backwards compatibility
 
 BATCH_SIZE = 32
@@ -86,7 +86,7 @@ WEIGHT_DECAY = 1e-4
 UNFREEZE_LAST_N_BLOCKS = 8  # None = unfreeze the whole backbone
 LABEL_SMOOTHING = 0.05
 EMD_LAMBDA = 0.5            # loss = CE + EMD_LAMBDA * EMD (when ordinal loss on)
-USE_BALANCED_SAMPLER = False  # if True, class-balanced sampling and the CE
+USE_BALANCED_SAMPLER = True   # if True, class-balanced sampling and the CE
                               # class weights are turned off (no double count)
 CHECKPOINT_PATH = "road_severity_model.pt"
 

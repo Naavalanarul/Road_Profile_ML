@@ -374,13 +374,21 @@ def train_single_fold(fold_idx, k_total, train_items, val_items, device, args):
     train_ds = FastMemoryRoadDataset(train_items, is_train=True)
     val_ds = FastMemoryRoadDataset(val_items, is_train=False)
 
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False)
 
     counts = train_ds.class_counts()
-    class_weights = compute_smoothed_class_weights(counts).to(device)
     print(f"Fold {fold_idx + 1} class counts: {counts}")
-    print(f"Smoothed class weights: {[round(w, 2) for w in class_weights.tolist()]}")
+    if config.USE_BALANCED_SAMPLER:
+        per_class_w = [1.0 / c if c else 0.0 for c in counts]
+        sample_w = [per_class_w[y] for y in train_ds.labels()]
+        sampler = torch.utils.data.WeightedRandomSampler(sample_w, num_samples=len(train_ds), replacement=True)
+        train_loader = DataLoader(train_ds, batch_size=args.batch_size, sampler=sampler)
+        class_weights = None
+        print("Using class-balanced sampler (CE class weights disabled)")
+    else:
+        train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True)
+        class_weights = compute_smoothed_class_weights(counts).to(device)
+        print(f"Smoothed class weights: {[round(w, 2) for w in class_weights.tolist()]}")
 
     criterion = CombinedLoss(class_weights, use_emd=config.USE_ORDINAL_LOSS,
                              emd_lambda=config.EMD_LAMBDA, label_smoothing=config.LABEL_SMOOTHING)

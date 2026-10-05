@@ -64,12 +64,6 @@ def get_transforms(train: bool):
 
 def _load_image(path):
     img = Image.open(path)
-    # JPEG draft: let the decoder downscale by 1/2, 1/4, 1/8 while the
-    # cropped strip stays at least as large as the model input.
-    need_w = config.INPUT_WIDTH
-    need_h = math.ceil(config.INPUT_HEIGHT / config.ROI_BOTTOM_FRACTION)
-    if img.format == "JPEG":
-        img.draft("RGB", (need_w, need_h))
     return img.convert("RGB")
 
 

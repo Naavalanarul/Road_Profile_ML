@@ -24,8 +24,10 @@ import config
 def group_key(row):
     stem = os.path.splitext(os.path.basename(row["image_path"]))[0]
     try:
-        idx = int(stem.rsplit("_", 1)[1])
-        return (row["country"], idx // config.SPLIT_BLOCK_SIZE)
+        parts = stem.rsplit("_", 1)
+        prefix = parts[0]
+        idx = int(parts[1])
+        return (row["country"], prefix, idx // config.SPLIT_BLOCK_SIZE)
     except (IndexError, ValueError):
         return (row["country"], stem)  # unparseable name -> its own group
 

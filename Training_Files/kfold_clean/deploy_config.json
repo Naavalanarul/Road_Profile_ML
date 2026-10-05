@@ -1,0 +1,16 @@
+{
+  "classes": [
+    "Smooth",
+    "Normal",
+    "Rough",
+    "Pothole"
+  ],
+  "logit_bias": [
+    -0.6000000238418579,
+    0.10000000149011612,
+    -0.20000000298023224,
+    -0.20000000298023224
+  ],
+  "pothole_threshold": 0.8000000000000005,
+  "input": "RGB float32 0-255 NCHW, bottom 0.35 crop, resized to 192x512 (HxW), bilinear"
+}
