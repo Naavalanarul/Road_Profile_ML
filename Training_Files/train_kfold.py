@@ -34,10 +34,13 @@ Usage:
 import argparse
 import copy
 import csv
+import functools
 import os
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
+
+print = functools.partial(print, flush=True)
 
 import numpy as np
 from PIL import Image
