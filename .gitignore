@@ -2,3 +2,4 @@
 /Training_Files/__pycache__
 .csv
 Training_Files/road_severity_model_fold*.pt
+Training_Files/road_severity_model_kfold_best.pt
