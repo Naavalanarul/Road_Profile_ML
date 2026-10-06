@@ -8,17 +8,18 @@
 ## 1. Summary
 
 - **Goal:** combine several road-damage datasets, train one model, and turn its output into the 4 road classes (**Smooth, Normal, Rough, Pothole**) and the **Road Severity Index (RSI)** from the proposal.
-- **Approach chosen:** one **YOLOv8s object detector** trained on **RDD2022 + the Kaggle pothole-cracks-and-openmanhole dataset**. Each frame's detections are converted into a road class and RSI by a simple rule.
+- **Approach chosen:** one **YOLOv8s object detector** for **potholes, cracks and alligator cracks**, trained on **RDD2022 + a Kaggle pothole & crack dataset**. Each frame's detections are converted into a road class and RSI by a simple rule.
 - **Main results:**
 
 | What is measured | Result |
 |---|---|
-| Road-class accuracy, test set (2,452 images) | **0.815** |
-| Pothole recall, image level (test set) | **0.88**, from 0.84 on RDD2022 dashcam images to 0.98 on Kaggle images |
-| Pothole precision, image level (test set) | **0.88** |
+| Road-class accuracy, test set (2,378 images) | **0.828** (0.808 before the Normal/Rough fix in section 7.5) |
+| Normal-road recall, test set | **0.71** (0.56 before the fix) |
+| Pothole recall, image level (test set) | **0.86**, from 0.84 on RDD2022 dashcam images to 0.92 on Kaggle images |
+| Pothole precision, image level (test set) | **0.86** |
 | Pothole recall per box, on the old Kaggle validation images | **0.59** (old model: 0.55) |
-| Detector mAP50, merged validation set | **0.728** |
-| 7 test videos | All ran correctly; potholes, open manholes and cracks found; a few false alarms (section 9) |
+| Detector mAP50 (pothole, crack, alligator crack), merged validation set | **0.66** |
+| 3 test videos | All ran correctly; potholes and cracks found; a few brief false potholes (section 9) |
 
 ---
 
@@ -27,7 +28,7 @@
 | Item | State before this work |
 |---|---|
 | Teammate's model (`Training_Files/train.py`) | MobileNetV2 4-class image classifier trained on RDD2022 only. Reported to be weak at detecting potholes. Never scored on its test set. Data paths pointed to a Mac. |
-| Our earlier model (`pothole-cracks-and-openmanhole/`) | YOLOv8s trained on the Kaggle dataset only (2,236 images). mAP50 0.79, but **pothole recall only 0.55** (missed almost half of potholes). |
+| Our earlier model (Kaggle only) | YOLOv8s trained on the Kaggle dataset only (2,236 images). **Pothole recall only 0.55** (missed almost half of potholes). |
 | RDD2022 images on this PC | None. |
 
 ### The two dataset links that were provided
@@ -44,6 +45,7 @@
 |---|---|---|
 | Which RDD2022 countries to download? | India, Japan, Czech, United States, China_MotorBike (**Norway skipped**) | Norway is 9.9 GB of mostly wide highway shots where damage is tiny. The other 5 are about 2.4 GB. |
 | Classifier or detector? | **Detector, then RSI** | A whole-image classifier shrinks the image, so small potholes blur away. A detector looks for each defect separately, and the result converts to RSI by a clear rule. YOLO also runs fast on Jetson (TensorRT). |
+| Which defects count? | **Potholes, cracks and alligator cracks only** | The project only considers road-surface defects. |
 
 ---
 
@@ -78,18 +80,19 @@ Script: `Training_Files/build_yolo_dataset.py`. Output: `Dataset/merged_yolo/` (
 
 ### 5.1 Shared class list
 
-| New class | From RDD2022 | From Kaggle |
+| Class | From RDD2022 | From Kaggle |
 |---|---|---|
-| 0 `pothole` | D40 | 0 pothole |
-| 1 `crack` | D00 (along the road), D10 (across the road) | 1 cracks |
+| 0 `pothole` | D40 | pothole |
+| 1 `crack` | D00 (along the road), D10 (across the road) | cracks |
 | 2 `alligator_crack` | D20 | – |
-| 3 `open_manhole` | – | 2 open_manhole |
+
+The detector file also contains one extra class from the Kaggle data that this project does not use. The pipeline never asks the model for it, and images containing it are left out of every evaluation in this report.
 
 RDD2022 codes **not used:**
 
 | Code | Boxes | Meaning |
 |---|---|---|
-| D44 | 5,057 | closed manhole cover (not a defect) |
+| D44 | 5,057 | utility cover (not a defect) |
 | D50 | 3,581 | road marking |
 | D43 | 793 | crosswalk blur |
 | Repair | 277 | patched area |
@@ -100,7 +103,7 @@ RDD2022 codes **not used:**
 ### 5.2 Converting and splitting
 - RDD2022 boxes were converted from Pascal VOC XML into YOLO format. Boxes are clipped to the image, and any box under 1 pixel is dropped.
 - **RDD2022 split:** 80% train, 10% validation, 10% test. Frames are kept together in **blocks of 50 consecutive frames**, so near-identical dashcam frames can't end up in both train and test. That would inflate the scores.
-- **Kaggle split:** Kaggle *train* goes to train. Kaggle *valid* (480 images) is divided alternately between validation and test.
+- **Kaggle split:** Kaggle *train* goes to train. Kaggle *valid* is divided alternately between validation and test.
 - **Background images** (images with no defect boxes) are capped at 15% of each split. All of them would swamp the training.
 
 ### 5.3 Final dataset
@@ -113,7 +116,8 @@ RDD2022 codes **not used:**
 | Pothole boxes | **5,880** | 726 | 896 |
 | Crack boxes | 20,759 | 2,662 | 2,474 |
 | Alligator-crack boxes | 7,859 | 981 | 1,015 |
-| Open-manhole boxes | 680 | 74 | 74 |
+
+Evaluations in sections 7–8 use the 2,378 test images (and 2,448 validation images) that contain only these three classes.
 
 The model now has **5,880 pothole boxes to train on**, up from **1,080** in the Kaggle-only model, about 5.4× more.
 
@@ -135,7 +139,7 @@ The model now has **5,880 pothole boxes to train on**, up from **1,080** in the 
 1. **Crash after epoch 1:** "The paging file is too small". With 4 data-loading workers, the laptop ran out of memory (15 GB RAM, nearly all in use). **Fix:** restarted with `workers=2`.
 2. **Interrupted at epoch 51:** at 19:57 the Claude desktop app updated itself and the GPU driver reset; the laptop had also gone into standby at 19:46. The training process was stopped. **Fix:** resumed from `last.pt` (epoch 50); nothing was lost. The best checkpoint before the resume is backed up as `weights/best_epoch1-50.pt`.
 
-### Progress (merged validation set, all classes)
+### Progress (merged validation set, averaged over all trained classes)
 
 | Epoch | Recall | mAP50 |
 |---|---|---|
@@ -145,15 +149,16 @@ The model now has **5,880 pothole boxes to train on**, up from **1,080** in the 
 | 30–50 | ~0.68 | 0.72–0.73 |
 | **59 (best)** | **0.69** | **0.728** |
 
+The curve is flat after about epoch 40.
+
 ### Final validation results per class (box level, merged validation set)
 
 | Class | Precision | Recall | mAP50 |
 |---|---|---|---|
-| All | 0.75 | 0.68 | 0.725 |
+| Average of the three | 0.69 | 0.60 | 0.66 |
 | Pothole | 0.69 | 0.54 | 0.60 |
 | Crack | 0.66 | 0.62 | 0.66 |
 | Alligator crack | 0.72 | 0.65 | 0.72 |
-| Open manhole | 0.92 | 0.92 | 0.92 |
 
 Pothole recall per box looks low here because the RDD2022 dashcam frames contain many small, distant potholes. The suspension needs the **image-level** result (section 8), not every single box.
 
@@ -165,8 +170,8 @@ Script: `Training_Files/rsi_detector.py`
 
 ### 7.1 The rule (applied to each frame)
 Only boxes with confidence ≥ **0.15** count.
-1. Any **pothole** or **open manhole** → **Pothole**
-2. Otherwise, any **alligator crack**, or cracks covering ≥ **5%** of the frame → **Rough**
+1. Any **pothole** → **Pothole**
+2. Otherwise, any **alligator crack**, or crack boxes together covering ≥ **7%** of the frame (overlaps counted once) → **Rough**
 3. Otherwise, any crack at all → **Normal**
 4. No defects → **Smooth**
 
@@ -184,82 +189,115 @@ The rule reuses the teammate's `SeverityStateMachine` from `infer_smooth.py`:
 - **Moving to a worse class happens instantly**, because a pothole is only in view for a few frames.
 - **Moving to a better class** needs the smoothed result to be confident **and** at least **10 frames** in the current class, so the suspension doesn't soften before the wheel has passed the defect.
 
-### 7.4 Choosing the two thresholds (validation set)
-`evaluate_rsi.py --sweep` tested 20 combinations:
+### 7.4 Choosing the confidence threshold (validation set)
 
-| Confidence | Crack area | Accuracy | Pothole recall | Pothole precision |
-|---|---|---|---|---|
-| **0.15** | **0.05** | **0.776** | **0.849** | 0.817 |
-| 0.25 (old default) | 0.05 | 0.775 | 0.786 | 0.892 |
-| 0.40 | 0.05 | 0.718 | 0.702 | 0.942 |
+| Confidence | Pothole recall | Pothole precision |
+|---|---|---|
+| **0.15** | **0.82** | 0.79 |
+| 0.25 (old default) | 0.74 | 0.87 |
+| 0.40 | 0.65 | 0.93 |
 
-**Chosen:** confidence 0.15, crack area 0.05. This gives the best pothole recall with almost no loss of accuracy. For the suspension, **missing a pothole is worse than a false alarm**.
+**Chosen:** confidence 0.15, the best pothole recall. For the suspension, **missing a pothole is worse than a false alarm**. The cost is more false pothole alarms.
+
+### 7.5 Fixing Normal vs Rough
+With the first rule (summed crack area ≥ 5%), only **56%** of true-Normal test frames were classified as Normal. Checking every one of the 486 true-Normal test frames showed why:
+
+| What happened to true-Normal frames | Frames | Share |
+|---|---|---|
+| Correct | 272 | 56% |
+| → Rough: predicted crack area crossed the 5% line | 129 | **27%** |
+| → Smooth: thin cracks missed | 39 | 8% |
+| → Rough: a false alligator crack was detected | 34 | 7% |
+| → Pothole: false pothole | 12 | 2% |
+
+**Cause of the biggest error:** in these frames the model's predicted crack area was about **1.8× the labelled area** (median 3.4% vs 1.9%), and more than 2× in 176 frames. Two reasons:
+1. The rule **added up box areas**, so overlapping crack boxes were counted twice.
+2. The 5% line sits close to real Normal crack areas: 10% of true-Normal frames already cover 4.3%.
+
+**Fix (no retraining):** predictions now use the **combined area covered by the crack boxes** (overlaps counted once) with a **7%** line. Both were tuned on the validation set from 24 combinations (summed vs combined area × crack confidence 0.15 / 0.25 / 0.35 × line 5 / 7 / 9 / 12%), keeping Rough recall ≥ 0.85.
+
+The **true** class is still computed from the labelled boxes with the original definition (summed area ≥ 5%), so before and after are scored against the same answers.
+
+| Test set | Accuracy | Smooth | Normal | Rough | Pothole |
+|---|---|---|---|---|---|
+| Before (summed area, 5%) | 0.808 | 0.79 | 0.56 | 0.91 | 0.86 |
+| **After (combined area, 7%)** | **0.828** | 0.79 | **0.71** | 0.89 | 0.86 |
+
+**Trade-off:** slightly more Rough frames are now called Normal (57, up from 34), so Rough recall drops from 0.91 to 0.89. Potholes are unaffected.
+
+**Considered and not done yet: adding Norway.** Norway has the most Normal images of any RDD2022 country (1,291 of 8,161), but it would mainly help the 8% of Normal frames where thin cracks are missed. It doesn't address the biggest cause above, costs 9.9 GB, and its damage is very small after resizing to 640 px. It's worth trying later together with a higher training resolution.
 
 ---
 
 ## 8. Test-set results (image level)
 
-Script: `Training_Files/evaluate_rsi.py --split test`
+Script: `Training_Files/evaluate_rsi.py --split test`, with the fixed rule from section 7.5.
 
-### All 2,452 test images. Accuracy **0.815**
+### All 2,378 test images. Accuracy **0.828**
 
 | True \ Predicted | Smooth | Normal | Rough | Pothole | Recall |
 |---|---|---|---|---|---|
-| Smooth | **289** | 40 | 24 | 14 | 0.79 |
-| Normal | 39 | **272** | 163 | 12 | **0.56** |
-| Rough | 32 | 34 | **985** | 36 | 0.91 |
-| Pothole | 19 | 7 | 34 | **452** | **0.88** |
-| **Precision** | 0.76 | 0.77 | 0.82 | **0.88** | |
+| Smooth | **289** | 41 | 23 | 14 | 0.79 |
+| Normal | 39 | **343** | 92 | 12 | **0.71** |
+| Rough | 32 | 57 | **962** | 36 | 0.89 |
+| Pothole | 22 | 8 | 33 | **375** | **0.86** |
+| **Precision** | 0.76 | 0.76 | 0.87 | **0.86** | |
+
+### Which way the errors go
+For the suspension, calling a road worse than it is (too stiff) is safer than calling it better (too soft).
+
+| | Frames | Share |
+|---|---|---|
+| Correct | 1,969 | 82.8% |
+| Over-estimate (too stiff, less comfort) | 218 | 9.2% |
+| Under-estimate by 1 level | 129 | 5.4% |
+| Under-estimate by 2+ levels (e.g. pothole treated as Smooth) | 62 | 2.6% |
+
+Of the 63 missed pothole frames, 33 were called Rough (RSI 0.65, still stiffened); 30 (7% of pothole frames) went to Smooth or Normal.
 
 ### By data source
 
 | | Accuracy | Pothole recall | Pothole precision |
 |---|---|---|---|
-| RDD2022 dashcam (2,212 images) | 0.80 | 0.84 | 0.83 |
-| Kaggle (240 images) | 0.96 | 0.98 | 0.99 |
+| RDD2022 dashcam (2,212 images) | 0.82 | 0.84 | 0.83 |
+| Kaggle (166 images) | 0.93 | 0.92 | 0.98 |
 
 ### Like-for-like with the old model
-Same 480 Kaggle validation images, box level:
+Same Kaggle validation images, box level:
 
 | | Old (Kaggle only) | New (merged) |
 |---|---|---|
 | Pothole recall | 0.548 | **0.588** |
 | Pothole mAP50 | 0.678 | 0.681 |
 | Crack mAP50 | 0.761 | 0.744 |
-| Open manhole mAP50 | 0.922 | 0.916 |
-| Overall mAP50 | 0.787 | 0.780 |
 
 **What this means:** on the old benchmark the box scores barely changed. The real gains are elsewhere:
 1. The model now works on **dashcam road footage** (RDD2022), which the old model was never trained on.
-2. At image level it flags **88% of pothole images**, which is what the controller uses.
+2. At image level it flags **86% of pothole images**, which is what the controller uses.
 
 ---
 
 ## 9. Test-video results
 
-Run on the 7 videos in `pothole-cracks-and-openmanhole/dataset/dataset/test/video/`. The videos have no labels, so they were checked by eye on 6 sample frames each.
+Run on the 3 road-surface test videos that came with the Kaggle dataset (`testvideo1`, `testvideo2` and `testvideo6` in its `test/video/` folder). The videos have no labels, so they were checked by eye on 6 sample frames each.
 
 | Video | Content | Time in each class | Verdict |
 |---|---|---|---|
 | 1 | Badly potholed dirt road | Pothole 100% | ✅ Correct; many potholes boxed |
-| 2 | Wet rural road, dashcam | Pothole 57%, Rough 25%, Smooth 14%, Normal 3% | ✅ Mostly right. Class changes often (30 switches) |
-| 3 | Inside an open manhole, close up | Pothole 55%, Smooth 45% | ✅ Smooth only when the camera looks into the pit |
-| 4 | Worker lifting a manhole cover | Pothole 71%, Smooth 29% | ⚠️ Open manhole correct; **one false pothole** on the concrete around the closed cover |
-| 5 | City street with an open manhole | Pothole 50%, Smooth 21%, Rough 16%, Normal 12% | ✅ Found at mid-distance; **missed while far away** |
+| 2 | Wet rural road, dashcam | Pothole 57%, Rough 25%, Smooth 14%, Normal 3% | ✅ Mostly right: alligator crack → Rough, water-filled potholes → Pothole. Class changes often (31 switches) |
 | 6 | Asphalt cracks, close up | Rough 93%, Pothole 7% | ✅ Cracks → Rough; 2 brief false potholes on a wide crack |
-| 7 | CCTV: children near an open manhole | Pothole 83%, Smooth 17% | ✅ Steady detection; Smooth once it's covered |
 
-Annotated videos (boxes plus a coloured banner showing road class and RSI): `runs/detect/merged_v8s_videos/testvideo1_rsi.mp4` … `testvideo7_rsi.mp4`.
+Annotated videos (boxes plus a coloured banner showing road class and RSI): `runs/detect/merged_v8s_videos/testvideo1_rsi.mp4`, `testvideo2_rsi.mp4`, `testvideo6_rsi.mp4`.
 
 ---
 
 ## 10. Known limitations
 
-1. **Normal vs Rough is the weakest split** (Normal recall 0.56). The boundary is a hand-picked 5% crack area, not a measured roughness. The error usually goes toward Rough, which is the safer direction for the suspension.
-2. **The "true" road class is computed, not labelled by hand.** It comes from the annotation boxes using the same rule as the prediction. RDD2022 also doesn't annotate every defect, so some "Smooth" images contain damage.
-3. **False potholes** appear on rough concrete and wide cracks, a side effect of the low 0.15 threshold.
-4. **Distant objects are detected late**, which reduces the time the suspension has to react.
-5. **The test videos aren't dashcam footage** (mostly internet clips: handheld or CCTV). They don't test the real camera position on the vehicle.
+1. **Normal vs Rough is still the weakest split** (Normal recall 0.71 after the fix in section 7.5, up from 0.56). The boundary is a crack-area line, not a measured roughness.
+2. **The "true" road class is computed, not labelled by hand.** It comes from the annotation boxes. RDD2022 also doesn't annotate every defect, so some "Smooth" images contain damage.
+3. **False potholes** appear on wide cracks, a side effect of the low 0.15 threshold.
+4. **Small, distant potholes are the hardest boxes** (per-box recall 0.54), so how far ahead a pothole is detected is not known yet.
+5. **Only one test video is from a dashcam.** None tests the real camera position on our vehicle.
 6. **Not tested on Jetson yet.** No ONNX/TensorRT export, and no speed (FPS) measurement on Jetson.
 
 ---
@@ -271,9 +309,9 @@ Annotated videos (boxes plus a coloured banner showing road class and RSI): `run
 | File | Purpose | How to run |
 |---|---|---|
 | `download_rdd2022.py` | Downloads the chosen RDD2022 countries from figshare | `python download_rdd2022.py --out ../Dataset` |
-| `build_yolo_dataset.py` | Builds `Dataset/merged_yolo/` | `python build_yolo_dataset.py` |
-| `rsi_detector.py` | Video or camera → road class + RSI; `--save` writes an annotated video | `python rsi_detector.py --weights ../runs/detect/merged_v8s/weights/best.pt --source video.mp4 --save out.mp4` |
-| `evaluate_rsi.py` | Road-class confusion matrix; `--sweep` tests thresholds | `python evaluate_rsi.py --weights ... --split test` |
+| `build_yolo_dataset.py` | Builds `Dataset/merged_yolo/` (the dataset the current model was trained on) | `python build_yolo_dataset.py` |
+| `rsi_detector.py` | Video or camera → road class + RSI; `--save` writes an annotated video. Only requests pothole, crack and alligator-crack boxes | `python rsi_detector.py --weights ../runs/detect/merged_v8s/weights/best.pt --source video.mp4 --save out.mp4` |
+| `evaluate_rsi.py` | Road-class confusion matrix; `--sweep` tests thresholds. Scores against the label definition (summed crack area ≥ 5%) | `python evaluate_rsi.py --weights ... --split test` |
 
 Run them with the Python environment at `pothole-cracks-and-openmanhole/.venv`.
 
@@ -287,17 +325,18 @@ Run them with the Python environment at `pothole-cracks-and-openmanhole/.venv`.
 | `runs/detect/merged_v8s/weights/best_epoch1-50.pt` | Backup from before the resume |
 | `runs/detect/merged_v8s/` | Training curves, confusion matrix, `results.csv` |
 | `runs/detect/merged_v8s_kaggle_val/` | Like-for-like evaluation output |
-| `runs/detect/merged_v8s_videos/` | 7 annotated test videos |
+| `runs/detect/merged_v8s_videos/` | Annotated test videos |
 | `runs/merged_v8s_train_part1.log`, `runs/merged_v8s_train.log` | Training logs (before and after the resume) |
 
-Nothing has been committed to git yet. `Dataset/` is already ignored by git.
+The scripts and this report are on the git branch `road-perception-merged-yolo`. `Dataset/` and `runs/` are not in git.
 
 ---
 
 ## 12. Suggested next steps
 
-1. **Improve Normal vs Rough:** tune the crack-area threshold against real ride measurements, or train **YOLOv8m** (more accurate, about 2× slower).
+1. **Improve Normal vs Rough further:** define the classes from real ride measurements (accelerometer on the Quanser rig or a phone in the car); try a separate confidence threshold for alligator cracks (7% of Normal errors); train at 960 px and/or **YOLOv8m**, optionally adding Norway (helps thin cracks).
 2. **Export for Jetson:** ONNX, then TensorRT (FP16), and measure FPS on the Jetson Orin.
 3. **Record a real dashcam clip** on local roads and test with `rsi_detector.py --save`.
 4. **Connect to the controller:** send the RSI from `rsi_detector.py` (serial, ROS or socket) to the STSMC gain scheduler.
 5. **Resolve the RSI mismatch:** `config.py`/`infer_smooth.py` use 0–3, while the proposal and `rsi_detector.py` use 0.10–0.95.
+6. **Optional: retrain with only the three classes**, so the model file contains nothing the project doesn't use.

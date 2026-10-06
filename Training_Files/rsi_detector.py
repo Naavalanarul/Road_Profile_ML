@@ -2,8 +2,9 @@
 rsi_detector.py
 
 YOLO detections -> road class -> Road Severity Index (RSI), using the
-proposal's RSI diagnostic matrix. Model is trained on Dataset/merged_yolo
-(classes: 0 pothole, 1 crack, 2 alligator_crack, 3 open_manhole).
+proposal's RSI diagnostic matrix. Model is trained on Dataset/merged_yolo;
+only classes 0 pothole, 1 crack and 2 alligator_crack are used (the
+checkpoint's extra class 3 is never requested from the model).
 
 Live use on video / camera, with the same peak-hold state machine as
 infer_smooth.py (instant escalation, dwell-gated de-escalation):
@@ -17,22 +18,43 @@ import argparse
 CLASSES = ["Smooth", "Normal", "Rough", "Pothole"]
 RSI = {"Smooth": 0.10, "Normal": 0.35, "Rough": 0.65, "Pothole": 0.95}
 
-POTHOLE, CRACK, ALLIGATOR, MANHOLE = 0, 1, 2, 3
+POTHOLE, CRACK, ALLIGATOR = 0, 1, 2
+USED_CLASSES = [POTHOLE, CRACK, ALLIGATOR]
 CONF = 0.15               # min detection confidence to count a box
-ROUGH_CRACK_AREA = 0.05   # crack boxes covering >= this fraction of the frame -> Rough
+# Predicted crack boxes overlap and run larger than the labels (median ~1.8x
+# the labelled area in true-Normal frames), so predictions measure the union
+# of crack boxes and use a higher line than the 5% that defines Rough in the
+# labels. Tuned on the val split: Normal recall 0.56 -> 0.71 on test.
+ROUGH_CRACK_AREA = 0.07   # union of crack boxes covering >= this fraction -> Rough
+UNION_GRID = 64           # resolution of the union-area mask
 
 
-def classify(boxes, conf=CONF, rough_area=ROUGH_CRACK_AREA):
+def crack_area(boxes, union):
+    """boxes: (x, y, w, h) normalised. Sum of box areas, or area of their union."""
+    if not union:
+        return sum(w * h for _, _, w, h in boxes)
+    import numpy as np
+    g = UNION_GRID
+    mask = np.zeros((g, g), bool)
+    for x, y, w, h in boxes:
+        x0, x1 = int(max(0.0, x - w / 2) * g), int(np.ceil(min(1.0, x + w / 2) * g))
+        y0, y1 = int(max(0.0, y - h / 2) * g), int(np.ceil(min(1.0, y + h / 2) * g))
+        mask[y0:y1, x0:x1] = True
+    return float(mask.mean())
+
+
+def classify(boxes, conf=CONF, rough_area=ROUGH_CRACK_AREA, union=True):
     """
-    boxes: iterable of (cls, conf, w, h) with w, h normalised to 0-1.
-    Ground-truth boxes can be passed with conf=1.0.
+    boxes: iterable of (cls, conf, x, y, w, h) with x, y, w, h normalised to 0-1.
+    The defaults are the prediction rule. evaluate_rsi.py labels ground truth
+    with conf=0, rough_area=0.05, union=False.
     Returns one of CLASSES.
     """
-    kept = [(c, w * h) for c, p, w, h in boxes if p >= conf]
-    if any(c in (POTHOLE, MANHOLE) for c, _ in kept):
+    kept = [(c, x, y, w, h) for c, p, x, y, w, h in boxes if p >= conf and c in USED_CLASSES]
+    if any(c == POTHOLE for c, *_ in kept):
         return "Pothole"
-    crack_area = sum(a for c, a in kept if c in (CRACK, ALLIGATOR))
-    if any(c == ALLIGATOR for c, _ in kept) or crack_area >= rough_area:
+    cracks = [b[1:] for b in kept if b[0] in (CRACK, ALLIGATOR)]
+    if any(c == ALLIGATOR for c, *_ in kept) or crack_area(cracks, union) >= rough_area:
         return "Rough"
     if kept:
         return "Normal"
@@ -40,10 +62,10 @@ def classify(boxes, conf=CONF, rough_area=ROUGH_CRACK_AREA):
 
 
 def boxes_from_result(result):
-    """Ultralytics Result -> list of (cls, conf, w, h) normalised."""
+    """Ultralytics Result -> list of (cls, conf, x, y, w, h) normalised."""
     b = result.boxes
-    return [(int(c), float(p), float(wh[0]), float(wh[1]))
-            for c, p, wh in zip(b.cls, b.conf, b.xywhn[:, 2:])]
+    return [(int(c), float(p), *map(float, xywh))
+            for c, p, xywh in zip(b.cls, b.conf, b.xywhn)]
 
 
 def main():
@@ -65,7 +87,7 @@ def main():
     writer, frames_in = None, {c: 0 for c in CLASSES}
     colours = {"Smooth": (80, 175, 76), "Normal": (0, 200, 255), "Rough": (0, 140, 255), "Pothole": (40, 40, 220)}
 
-    for i, result in enumerate(model.predict(source, stream=True, conf=CONF, verbose=False)):
+    for i, result in enumerate(model.predict(source, stream=True, conf=CONF, classes=USED_CLASSES, verbose=False)):
         frame_class = classify(boxes_from_result(result))
         probs = torch.zeros(len(CLASSES))
         probs[CLASSES.index(frame_class)] = 1.0

@@ -2,11 +2,13 @@
 evaluate_rsi.py
 
 Image-level evaluation of the detector -> road class pipeline.
-Ground-truth class = rsi_detector.classify() applied to the label boxes;
-predicted class    = rsi_detector.classify() applied to YOLO detections.
+Ground-truth class = rsi_detector.classify() on the label boxes with the
+                     label definition (summed crack area >= 5%);
+predicted class    = rsi_detector.classify() on YOLO detections with the
+                     prediction defaults (union crack area >= ROUGH_CRACK_AREA).
 
     python evaluate_rsi.py --weights ../runs/detect/merged_v8s/weights/best.pt --split test
-    python evaluate_rsi.py --weights ... --split val --sweep     # tune CONF / ROUGH_CRACK_AREA
+    python evaluate_rsi.py --weights ... --split val --sweep     # tune CONF / ROUGH_CRACK_AREA (union area)
 """
 
 import argparse
@@ -14,7 +16,9 @@ import collections
 import glob
 import os
 
-from rsi_detector import CLASSES, CONF, ROUGH_CRACK_AREA, classify
+from rsi_detector import CLASSES, CONF, ROUGH_CRACK_AREA, USED_CLASSES, classify
+
+GT_ROUGH_AREA = 0.05  # defines Rough in the labels; fixed so scores stay comparable
 
 DATA = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "Dataset", "merged_yolo")
 
@@ -25,8 +29,12 @@ def load_gt(label_path):
         for line in open(label_path):
             p = line.split()
             if len(p) == 5:
-                boxes.append((int(p[0]), 1.0, float(p[3]), float(p[4])))
+                boxes.append((int(p[0]), 1.0, *map(float, p[1:])))
     return boxes
+
+
+def label_path(split, image):
+    return os.path.join(DATA, "labels", split, os.path.splitext(os.path.basename(image))[0] + ".txt")
 
 
 def report(rows, title):
@@ -58,21 +66,26 @@ def main():
 
     model = YOLO(args.weights)
     images = sorted(glob.glob(os.path.join(DATA, "images", args.split, "*.jpg")))
+    # Skip images whose labels contain a class the pipeline doesn't use.
+    images = [p for p in images
+              if all(c in USED_CLASSES for c, *_ in load_gt(label_path(args.split, p)))]
+    print(f"{len(images)} {args.split} images")
 
     cached = []  # (source, gt_class, predicted boxes at low conf)
     # A list source is predicted as one batch, so feed it in chunks.
     results = (r for i in range(0, len(images), 16)
-               for r in model.predict(images[i:i + 16], conf=0.05, verbose=False))
+               for r in model.predict(images[i:i + 16], conf=0.05, classes=USED_CLASSES, verbose=False))
     for result in results:
         name = os.path.basename(result.path)
-        label = os.path.join(DATA, "labels", args.split, os.path.splitext(name)[0] + ".txt")
+        label = label_path(args.split, name)
         source = "kaggle" if name.startswith("kaggle_") else "rdd"
-        cached.append((source, classify(load_gt(label)), boxes_from_result(result)))
+        gt_class = classify(load_gt(label), conf=0.0, rough_area=GT_ROUGH_AREA, union=False)
+        cached.append((source, gt_class, boxes_from_result(result)))
 
     if args.sweep:
         print("conf  rough_area  accuracy  pothole_recall  pothole_precision  rough_recall")
         for conf in (0.15, 0.2, 0.25, 0.3, 0.4):
-            for area in (0.02, 0.05, 0.08, 0.12):
+            for area in (0.05, 0.07, 0.09, 0.12):
                 rows = [(s, g, classify(b, conf, area)) for s, g, b in cached]
                 acc = sum(g == p for _, g, p in rows) / len(rows)
                 gp = [p for _, g, p in rows if g == "Pothole"]
