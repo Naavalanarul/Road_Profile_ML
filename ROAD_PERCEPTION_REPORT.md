@@ -291,7 +291,40 @@ Annotated videos (boxes plus a coloured banner showing road class and RSI): `run
 
 ---
 
-## 10. Known limitations
+## 10. Model comparison: YOLOv8s vs YOLO11s vs YOLOv8m (14–15 October 2026)
+
+To check whether a newer or bigger model helps, YOLO11s and YOLOv8m were trained on the same merged dataset with the same settings: 60 epochs, 640 px, patience 15. YOLOv8m used batch 8 to fit in 8 GB of GPU memory. All three models were then scored on the same test set using the rule in section 7: 2,378 images, with open-manhole images excluded.
+
+- **Scripts:** `Training_Files/compare_models.py` runs everything and is resumable; `Training_Files/summarize_comparison.py` builds the table.
+- **Results:** `runs/compare/COMPARISON.md` plus the raw outputs in `runs/compare/`.
+
+| | **YOLOv8s (current)** | YOLO11s | YOLOv8m |
+|---|---|---|---|
+| Road-class accuracy | 0.828 | **0.830** | 0.819 |
+| Pothole image recall | **0.856** | 0.838 | **0.856** |
+| Pothole image precision | **0.858** | 0.853 | 0.824 |
+| Pothole image recall, RDD2022 only | **0.839** | 0.813 | 0.836 |
+| Normal recall | 0.706 | **0.708** | 0.700 |
+| Rough recall | 0.885 | **0.892** | 0.876 |
+| Pothole box recall (merged test) | 0.472 | 0.467 | **0.499** |
+| Pothole box recall (Kaggle images) | 0.588 | **0.633** | 0.604 |
+| Box mAP50 (test) | 0.721 | 0.717 | **0.725** |
+| Inference, ms per image (RTX 5060, batch 8) | **4.6** | **4.6** | 10.1 |
+| Best epoch | 59 | 51 | 40 (stopped early at 55) |
+
+The threshold sweep on the validation set was repeated for each model. The current setting (confidence 0.15, Rough at 7% union area) is the best, or within 0.01 of the best, for all three, so per-model tuning doesn't change the ranking.
+
+**Conclusions**
+1. **YOLOv8m is not worth it.** It finds about 3% more pothole boxes, but catches the same share of pothole images (0.856), gives more false pothole alarms (precision 0.824), and is 2.2× slower, which matters on the Jetson.
+2. **YOLO11s ties with YOLOv8s.** It has slightly higher overall accuracy but lower pothole recall on dashcam images (0.813 vs 0.839).
+3. **The model is not the bottleneck; the data is.** All three are within about 0.01 on the measures that matter for the suspension. Further gains should come from labelled frames from our own dashcam, look-alike negative examples (manhole covers, patches, shadows), and accelerometer-based Normal/Rough labels.
+4. **Decision: keep YOLOv8s** (`runs/detect/merged_v8s/weights/best.pt`).
+
+**Training interruptions:** both new runs were interrupted and resumed from their last saved epoch with nothing lost. YOLO11s was stopped when its console window was closed; it is now launched with a hidden window. YOLOv8m was stopped by a Windows Update restart at 03:31.
+
+---
+
+## 11. Known limitations
 
 1. **Normal vs Rough is still the weakest split** (Normal recall 0.71 after the fix in section 7.5, up from 0.56). The boundary is a crack-area line, not a measured roughness.
 2. **The "true" road class is computed, not labelled by hand.** It comes from the annotation boxes. RDD2022 also doesn't annotate every defect, so some "Smooth" images contain damage.
@@ -302,7 +335,7 @@ Annotated videos (boxes plus a coloured banner showing road class and RSI): `run
 
 ---
 
-## 11. Files
+## 12. Files
 
 ### New scripts in `Training_Files/`
 
@@ -312,6 +345,8 @@ Annotated videos (boxes plus a coloured banner showing road class and RSI): `run
 | `build_yolo_dataset.py` | Builds `Dataset/merged_yolo/` (the dataset the current model was trained on) | `python build_yolo_dataset.py` |
 | `rsi_detector.py` | Video or camera → road class + RSI; `--save` writes an annotated video. Only requests pothole, crack and alligator-crack boxes | `python rsi_detector.py --weights ../runs/detect/merged_v8s/weights/best.pt --source video.mp4 --save out.mp4` |
 | `evaluate_rsi.py` | Road-class confusion matrix; `--sweep` tests thresholds. Scores against the label definition (summed crack area ≥ 5%) | `python evaluate_rsi.py --weights ... --split test` |
+| `compare_models.py` | Trains YOLO11s and YOLOv8m, then evaluates all three models (section 10). Re-run to resume after an interruption | `python compare_models.py` |
+| `summarize_comparison.py` | Builds the comparison table in `runs/compare/COMPARISON.md` | `python summarize_comparison.py` |
 
 Run them with the Python environment at `pothole-cracks-and-openmanhole/.venv`.
 
@@ -327,14 +362,16 @@ Run them with the Python environment at `pothole-cracks-and-openmanhole/.venv`.
 | `runs/detect/merged_v8s_kaggle_val/` | Like-for-like evaluation output |
 | `runs/detect/merged_v8s_videos/` | Annotated test videos |
 | `runs/merged_v8s_train_part1.log`, `runs/merged_v8s_train.log` | Training logs (before and after the resume) |
+| `runs/detect/merged_y11s/`, `runs/detect/merged_v8m/` | The two comparison models (section 10) |
+| `runs/compare/` | Comparison table `COMPARISON.md`, evaluation outputs and training logs |
 
 The scripts and this report are on the git branch `road-perception-merged-yolo`. `Dataset/` and `runs/` are not in git.
 
 ---
 
-## 12. Suggested next steps
+## 13. Suggested next steps
 
-1. **Improve Normal vs Rough further:** define the classes from real ride measurements (accelerometer on the Quanser rig or a phone in the car); try a separate confidence threshold for alligator cracks (7% of Normal errors); train at 960 px and/or **YOLOv8m**, optionally adding Norway (helps thin cracks).
+1. **Improve Normal vs Rough further:** define the classes from real ride measurements (accelerometer on the Quanser rig or a phone in the car); try a separate confidence threshold for alligator cracks (7% of Normal errors); train at 960 px, optionally adding Norway (helps thin cracks). YOLOv8m and YOLO11s were tested and gave no meaningful gain (section 10).
 2. **Export for Jetson:** ONNX, then TensorRT (FP16), and measure FPS on the Jetson Orin.
 3. **Record a real dashcam clip** on local roads and test with `rsi_detector.py --save`.
 4. **Connect to the controller:** send the RSI from `rsi_detector.py` (serial, ROS or socket) to the STSMC gain scheduler.
