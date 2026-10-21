@@ -21,12 +21,35 @@ RSI = {"Smooth": 0.10, "Normal": 0.35, "Rough": 0.65, "Pothole": 0.95}
 POTHOLE, CRACK, ALLIGATOR = 0, 1, 2
 USED_CLASSES = [POTHOLE, CRACK, ALLIGATOR]
 CONF = 0.15               # min detection confidence to count a box
+POTHOLE_CONF = 0.25       # pothole boxes need more: low-confidence potholes were false alarms on real roads
 # Predicted crack boxes overlap and run larger than the labels (median ~1.8x
 # the labelled area in true-Normal frames), so predictions measure the union
 # of crack boxes and use a higher line than the 5% that defines Rough in the
 # labels. Tuned on the val split: Normal recall 0.56 -> 0.71 on test.
 ROUGH_CRACK_AREA = 0.07   # union of crack boxes covering >= this fraction -> Rough
 UNION_GRID = 64           # resolution of the union-area mask
+CONFIRM_K, CONFIRM_N = 3, 4   # a class counts once it (or worse) is seen in K of the last N frames
+
+
+class Confirmer:
+    """
+    Filters single-frame false alarms before the peak-hold state machine.
+    Returns the most severe class that appears (or is exceeded) in at least
+    k of the last n frames. k=n=1 passes every frame through unchanged.
+    Costs k-1 frames of delay on a real escalation (~33 ms at 30 fps for k=2).
+    """
+
+    def __init__(self, k=CONFIRM_K, n=CONFIRM_N):
+        from collections import deque
+        self.k = k
+        self.history = deque(maxlen=n)
+
+    def update(self, frame_class):
+        self.history.append(CLASSES.index(frame_class))
+        for level in range(len(CLASSES) - 1, 0, -1):
+            if sum(i >= level for i in self.history) >= self.k:
+                return CLASSES[level]
+        return CLASSES[0]
 
 
 def crack_area(boxes, union):
@@ -43,14 +66,15 @@ def crack_area(boxes, union):
     return float(mask.mean())
 
 
-def classify(boxes, conf=CONF, rough_area=ROUGH_CRACK_AREA, union=True):
+def classify(boxes, conf=CONF, rough_area=ROUGH_CRACK_AREA, union=True, pothole_conf=POTHOLE_CONF):
     """
     boxes: iterable of (cls, conf, x, y, w, h) with x, y, w, h normalised to 0-1.
     The defaults are the prediction rule. evaluate_rsi.py labels ground truth
-    with conf=0, rough_area=0.05, union=False.
+    with conf=0, rough_area=0.05, union=False (label boxes have conf 1.0).
     Returns one of CLASSES.
     """
-    kept = [(c, x, y, w, h) for c, p, x, y, w, h in boxes if p >= conf and c in USED_CLASSES]
+    kept = [(c, x, y, w, h) for c, p, x, y, w, h in boxes
+            if c in USED_CLASSES and p >= conf and (c != POTHOLE or p >= pothole_conf)]
     if any(c == POTHOLE for c, *_ in kept):
         return "Pothole"
     cracks = [b[1:] for b in kept if b[0] in (CRACK, ALLIGATOR)]
@@ -84,13 +108,14 @@ def main():
     # infer_smooth's state machine is written against config.CLASSES, which
     # has the same Smooth < Normal < Rough < Pothole order as CLASSES here.
     sm = SeverityStateMachine()
+    confirmer = Confirmer()
     writer, frames_in = None, {c: 0 for c in CLASSES}
     colours = {"Smooth": (80, 175, 76), "Normal": (0, 200, 255), "Rough": (0, 140, 255), "Pothole": (40, 40, 220)}
 
     for i, result in enumerate(model.predict(source, stream=True, conf=CONF, classes=USED_CLASSES, verbose=False)):
         frame_class = classify(boxes_from_result(result))
         probs = torch.zeros(len(CLASSES))
-        probs[CLASSES.index(frame_class)] = 1.0
+        probs[CLASSES.index(confirmer.update(frame_class))] = 1.0
         stable, _, switched, reason = sm.update(probs)
         frames_in[stable] += 1
         if switched:

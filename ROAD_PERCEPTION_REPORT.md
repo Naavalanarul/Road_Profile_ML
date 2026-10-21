@@ -13,10 +13,11 @@
 
 | What is measured | Result |
 |---|---|
-| Road-class accuracy, test set (2,378 images) | **0.828** (0.808 before the Normal/Rough fix in section 7.5) |
-| Normal-road recall, test set | **0.71** (0.56 before the fix) |
-| Pothole recall, image level (test set) | **0.86**, from 0.84 on RDD2022 dashcam images to 0.92 on Kaggle images |
-| Pothole precision, image level (test set) | **0.86** |
+| Road-class accuracy, test set (2,378 images) | **0.819** with the current settings (0.828 before the false-pothole fix in section 7.6; 0.808 before the Normal/Rough fix in section 7.5) |
+| Normal-road recall, test set | **0.71** (0.56 before the Normal/Rough fix) |
+| Pothole recall, image level (test set) | **0.76** with the current settings (0.86 before the section 7.6 fix) |
+| Pothole precision, image level (test set) | **0.91** (0.86 before the section 7.6 fix) |
+| Our own recorded road video | Time wrongly rated Pothole roughly halved (27% → 13%) by the section 7.6 fix; some false potholes remain |
 | Pothole recall per box, on the old Kaggle validation images | **0.59** (old model: 0.55) |
 | Detector mAP50 (pothole, crack, alligator crack), merged validation set | **0.66** |
 | 3 test videos | All ran correctly; potholes and cracks found; a few brief false potholes (section 9) |
@@ -169,7 +170,7 @@ Pothole recall per box looks low here because the RDD2022 dashcam frames contain
 Script: `Training_Files/rsi_detector.py`
 
 ### 7.1 The rule (applied to each frame)
-Only boxes with confidence ≥ **0.15** count.
+Only boxes with confidence ≥ **0.15** count; **pothole boxes need ≥ 0.25** (section 7.6).
 1. Any **pothole** → **Pothole**
 2. Otherwise, any **alligator crack**, or crack boxes together covering ≥ **7%** of the frame (overlaps counted once) → **Rough**
 3. Otherwise, any crack at all → **Normal**
@@ -188,6 +189,7 @@ Only boxes with confidence ≥ **0.15** count.
 The rule reuses the teammate's `SeverityStateMachine` from `infer_smooth.py`:
 - **Moving to a worse class happens instantly**, because a pothole is only in view for a few frames.
 - **Moving to a better class** needs the smoothed result to be confident **and** at least **10 frames** in the current class, so the suspension doesn't soften before the wheel has passed the defect.
+- **Before that, a class must be confirmed:** it counts only once it (or a worse class) appears in **3 of the last 4 frames** (section 7.6).
 
 ### 7.4 Choosing the confidence threshold (validation set)
 
@@ -227,11 +229,41 @@ The **true** class is still computed from the labelled boxes with the original d
 
 **Considered and not done yet: adding Norway.** Norway has the most Normal images of any RDD2022 country (1,291 of 8,161), but it would mainly help the 8% of Normal frames where thin cracks are missed. It doesn't address the biggest cause above, costs 9.9 GB, and its damage is very small after resizing to 640 px. It's worth trying later together with a higher training resolution.
 
+### 7.6 Reducing false potholes on our own road video (15 October 2026)
+**Problem:** on our first recorded video (`my_videos/road1.mp4`, 2 min 38 s of mostly good campus roads), the road was rated **Pothole 27% of the time**, with 58 jumps to RSI 0.95. Of 8 jumps checked by eye, most came from weak pothole boxes (confidence 0.16–0.27) on plain asphalt texture or small stains. Each false frame then held Pothole for at least 10 frames.
+
+**Fix (same YOLOv8s model, no retraining):**
+1. **Separate pothole threshold 0.25.** Crack boxes stay at 0.15, so Rough detection is unchanged; raising the shared threshold would have cost Rough recall (0.88 → 0.79 at 0.30).
+2. **Frame confirmation, 3 of the last 4 frames** (`Confirmer` in `rsi_detector.py`). Single-frame false alarms are dropped, at a cost of 2 frames (~67 ms at 30 fps) before a real escalation.
+
+**How the setting was chosen:** each of 15 combinations (pothole threshold 0.15–0.35 × confirmation off / 2-of-3 / 3-of-4) was replayed on our video and the 7 test videos, from one cached detection pass. 0.25 + 3-of-4 gives the same false-alarm reduction as 0.30 + 2-of-3 while keeping more pothole recall.
+
+| Video | Before | After |
+|---|---|---|
+| Our video `road1`: time rated Pothole | 27% | **13%** |
+| Our video `road1`: jumps to Pothole | 58 | **28** |
+| Our video `road1`: time rated Smooth | 57% | **73%** |
+| testvideo1 (potholed road): time rated Pothole | 100% | 98% |
+| testvideo2 (dashcam with potholes): time rated Pothole | 57% | 41% |
+
+Checking 8 of the remaining 28 jumps by eye: **4 real** (a broken patch at 50.6 s, a distressed patch at 82 s, holes in a concrete slab at 101.5 s, a gravel patch at 157 s), **2 borderline** (small worn spots) and **2 still false** (plain road at 65.9 s, a small spot at 125.6 s that is flagged in several frames in a row). Before the fix, only about 1–2 of 8 checked jumps were real.
+
+**Cost on still test images** (the frame confirmation can't help single images):
+
+| Test set | Accuracy | Pothole recall | Pothole precision | Pothole → Smooth |
+|---|---|---|---|---|
+| Before (all boxes ≥ 0.15) | 0.828 | **0.86** | 0.86 | 22 |
+| **After (potholes ≥ 0.25)** | 0.819 | 0.76 | **0.91** | 38 |
+
+**Trade-off:** fewer false alarms, but more real potholes missed on single images. In video, a real pothole stays in view for many frames, so it has several chances to be detected; testvideo1 stays at 98% Pothole. The remaining false alarms repeat over several frames, so thresholds can't remove them: that needs labelled frames from our own roads (step 1 in section 13).
+
+`evaluate_rsi.py --sweep` now also prints a table varying only the pothole threshold.
+
 ---
 
 ## 8. Test-set results (image level)
 
-Script: `Training_Files/evaluate_rsi.py --split test`, with the fixed rule from section 7.5.
+Script: `Training_Files/evaluate_rsi.py --split test`, with the fixed rule from section 7.5. These results are **before** the pothole threshold was raised to 0.25 in section 7.6; the new test numbers are in that section.
 
 ### All 2,378 test images. Accuracy **0.828**
 
@@ -328,7 +360,7 @@ The threshold sweep on the validation set was repeated for each model. The curre
 
 1. **Normal vs Rough is still the weakest split** (Normal recall 0.71 after the fix in section 7.5, up from 0.56). The boundary is a crack-area line, not a measured roughness.
 2. **The "true" road class is computed, not labelled by hand.** It comes from the annotation boxes. RDD2022 also doesn't annotate every defect, so some "Smooth" images contain damage.
-3. **False potholes** appear on wide cracks, a side effect of the low 0.15 threshold.
+3. **False potholes** on plain asphalt, small stains and wide cracks. Section 7.6 halved them on our own video (Pothole time 27% → 13%), but some false alarms repeat over several frames and remain. The fix also lowered still-image pothole recall from 0.86 to 0.76.
 4. **Small, distant potholes are the hardest boxes** (per-box recall 0.54), so how far ahead a pothole is detected is not known yet.
 5. **Only one test video is from a dashcam.** None tests the real camera position on our vehicle.
 6. **Not tested on Jetson yet.** No ONNX/TensorRT export, and no speed (FPS) measurement on Jetson.
@@ -364,6 +396,9 @@ Run them with the Python environment at `pothole-cracks-and-openmanhole/.venv`.
 | `runs/merged_v8s_train_part1.log`, `runs/merged_v8s_train.log` | Training logs (before and after the resume) |
 | `runs/detect/merged_y11s/`, `runs/detect/merged_v8m/` | The two comparison models (section 10) |
 | `runs/compare/` | Comparison table `COMPARISON.md`, evaluation outputs and training logs |
+| `my_videos/road1.mp4` | Our first recorded road video |
+| `my_videos/road1_rsi.mp4`, `road1_log.txt` | Annotated video and class-change log, before the section 7.6 fix |
+| `my_videos/road1_rsi_fixed.mp4`, `road1_log_fixed.txt` | The same, after the fix |
 
 The scripts and this report are on the git branch `road-perception-merged-yolo`. `Dataset/` and `runs/` are not in git.
 
@@ -373,7 +408,7 @@ The scripts and this report are on the git branch `road-perception-merged-yolo`.
 
 1. **Improve Normal vs Rough further:** define the classes from real ride measurements (accelerometer on the Quanser rig or a phone in the car); try a separate confidence threshold for alligator cracks (7% of Normal errors); train at 960 px, optionally adding Norway (helps thin cracks). YOLOv8m and YOLO11s were tested and gave no meaningful gain (section 10).
 2. **Export for Jetson:** ONNX, then TensorRT (FP16), and measure FPS on the Jetson Orin.
-3. **Record a real dashcam clip** on local roads and test with `rsi_detector.py --save`.
+3. **Label frames from our own road videos** (real defects and look-alikes such as stains, patches and manhole covers) and fine-tune YOLOv8s on them. This is the fix for the false potholes that section 7.6 couldn't remove. Also add a **speed-bump** class: it matters for the suspension and none of the datasets label it.
 4. **Connect to the controller:** send the RSI from `rsi_detector.py` (serial, ROS or socket) to the STSMC gain scheduler.
 5. **Resolve the RSI mismatch:** `config.py`/`infer_smooth.py` use 0–3, while the proposal and `rsi_detector.py` use 0.10–0.95.
 6. **Optional: retrain with only the three classes**, so the model file contains nothing the project doesn't use.

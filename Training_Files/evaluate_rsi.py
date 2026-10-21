@@ -23,6 +23,17 @@ GT_ROUGH_AREA = 0.05  # defines Rough in the labels; fixed so scores stay compar
 DATA = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "Dataset", "merged_yolo")
 
 
+def sweep_stats(rows):
+    acc = sum(g == p for _, g, p in rows) / len(rows)
+    gp = [p for _, g, p in rows if g == "Pothole"]
+    pp = [g for _, g, p in rows if p == "Pothole"]
+    gr = [p for _, g, p in rows if g == "Rough"]
+    return (f"{acc:8.3f}  "
+            f"{sum(p == 'Pothole' for p in gp) / max(1, len(gp)):14.3f}  "
+            f"{sum(g == 'Pothole' for g in pp) / max(1, len(pp)):17.3f}  "
+            f"{sum(p == 'Rough' for p in gr) / max(1, len(gr)):12.3f}")
+
+
 def load_gt(label_path):
     boxes = []
     if os.path.isfile(label_path):
@@ -86,15 +97,12 @@ def main():
         print("conf  rough_area  accuracy  pothole_recall  pothole_precision  rough_recall")
         for conf in (0.15, 0.2, 0.25, 0.3, 0.4):
             for area in (0.05, 0.07, 0.09, 0.12):
-                rows = [(s, g, classify(b, conf, area)) for s, g, b in cached]
-                acc = sum(g == p for _, g, p in rows) / len(rows)
-                gp = [p for _, g, p in rows if g == "Pothole"]
-                pp = [g for _, g, p in rows if p == "Pothole"]
-                gr = [p for _, g, p in rows if g == "Rough"]
-                print(f"{conf:4.2f}  {area:10.2f}  {acc:8.3f}  "
-                      f"{sum(p == 'Pothole' for p in gp) / max(1, len(gp)):14.3f}  "
-                      f"{sum(g == 'Pothole' for g in pp) / max(1, len(pp)):17.3f}  "
-                      f"{sum(p == 'Rough' for p in gr) / max(1, len(gr)):12.3f}")
+                rows = [(s, g, classify(b, conf, area, pothole_conf=conf)) for s, g, b in cached]
+                print(f"{conf:4.2f}  {area:10.2f}  " + sweep_stats(rows))
+        print(f"\npothole_conf (conf={CONF}, rough_area={ROUGH_CRACK_AREA})  accuracy  pothole_recall  pothole_precision  rough_recall")
+        for pconf in (0.15, 0.2, 0.25, 0.3, 0.35, 0.4):
+            rows = [(s, g, classify(b, pothole_conf=pconf)) for s, g, b in cached]
+            print(f"{pconf:4.2f}{'':38s}" + sweep_stats(rows))
         return
 
     rows = [(s, g, classify(b)) for s, g, b in cached]
