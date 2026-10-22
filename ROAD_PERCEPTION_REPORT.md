@@ -350,7 +350,7 @@ The threshold sweep on the validation set was repeated for each model. The curre
 1. **YOLOv8m is not worth it.** It finds about 3% more pothole boxes, but catches the same share of pothole images (0.856), gives more false pothole alarms (precision 0.824), and is 2.2× slower, which matters on the Jetson.
 2. **YOLO11s ties with YOLOv8s.** It has slightly higher overall accuracy but lower pothole recall on dashcam images (0.813 vs 0.839).
 3. **The model is not the bottleneck; the data is.** All three are within about 0.01 on the measures that matter for the suspension. Further gains should come from labelled frames from our own dashcam, look-alike negative examples (manhole covers, patches, shadows), and accelerometer-based Normal/Rough labels.
-4. **Decision: keep YOLOv8s** (`runs/detect/merged_v8s/weights/best.pt`).
+4. **Decision: keep YOLOv8s** (`models/road_yolov8s_merged.pt`, a copy of `runs/detect/merged_v8s/weights/best.pt`).
 
 **Training interruptions:** both new runs were interrupted and resumed from their last saved epoch with nothing lost. YOLO11s was stopped when its console window was closed; it is now launched with a hidden window. YOLOv8m was stopped by a Windows Update restart at 03:31.
 
@@ -375,7 +375,7 @@ The threshold sweep on the validation set was repeated for each model. The curre
 |---|---|---|
 | `download_rdd2022.py` | Downloads the chosen RDD2022 countries from figshare | `python download_rdd2022.py --out ../Dataset` |
 | `build_yolo_dataset.py` | Builds `Dataset/merged_yolo/` (the dataset the current model was trained on) | `python build_yolo_dataset.py` |
-| `rsi_detector.py` | Video or camera → road class + RSI; `--save` writes an annotated video. Only requests pothole, crack and alligator-crack boxes | `python rsi_detector.py --weights ../runs/detect/merged_v8s/weights/best.pt --source video.mp4 --save out.mp4` |
+| `rsi_detector.py` | Video or camera → road class + RSI; `--save` writes an annotated video. Only requests pothole, crack and alligator-crack boxes | `python rsi_detector.py --weights ../models/road_yolov8s_merged.pt --source video.mp4 --save out.mp4` |
 | `evaluate_rsi.py` | Road-class confusion matrix; `--sweep` tests thresholds. Scores against the label definition (summed crack area ≥ 5%) | `python evaluate_rsi.py --weights ... --split test` |
 | `compare_models.py` | Trains YOLO11s and YOLOv8m, then evaluates all three models (section 10). Re-run to resume after an interruption | `python compare_models.py` |
 | `summarize_comparison.py` | Builds the comparison table in `runs/compare/COMPARISON.md` | `python summarize_comparison.py` |
@@ -388,7 +388,7 @@ Run them with the Python environment at `pothole-cracks-and-openmanhole/.venv`.
 |---|---|
 | `Dataset/RDD2022/` | 5 RDD2022 countries + downloaded zips + download logs |
 | `Dataset/merged_yolo/` | Merged dataset + `data.yaml`; also `kaggle_eval.yaml` for the like-for-like check |
-| `runs/detect/merged_v8s/weights/best.pt` | ⭐ **Final model** |
+| `runs/detect/merged_v8s/weights/best.pt` | Final model as saved by training (the committed copy is `models/road_yolov8s_merged.pt`) |
 | `runs/detect/merged_v8s/weights/best_epoch1-50.pt` | Backup from before the resume |
 | `runs/detect/merged_v8s/` | Training curves, confusion matrix, `results.csv` |
 | `runs/detect/merged_v8s_kaggle_val/` | Like-for-like evaluation output |
@@ -400,7 +400,7 @@ Run them with the Python environment at `pothole-cracks-and-openmanhole/.venv`.
 | `my_videos/road1_rsi.mp4`, `road1_log.txt` | Annotated video and class-change log, before the section 7.6 fix |
 | `my_videos/road1_rsi_fixed.mp4`, `road1_log_fixed.txt` | The same, after the fix |
 
-The scripts and this report are on the git branch `road-perception-merged-yolo`. `Dataset/` and `runs/` are not in git.
+The scripts, this report and the final model **`models/road_yolov8s_merged.pt`** (22.5 MB, identical to `runs/detect/merged_v8s/weights/best.pt`) are on the git branch `road-perception-merged-yolo`. `Dataset/` and `runs/` are not in git.
 
 ---
 
