@@ -1,0 +1,144 @@
+"""
+rsi_detector.py
+
+YOLO detections -> road class -> Road Severity Index (RSI), using the
+proposal's RSI diagnostic matrix. Model is trained on Dataset/merged_yolo;
+only classes 0 pothole, 1 crack and 2 alligator_crack are used (the
+checkpoint's extra class 3 is never requested from the model).
+
+Live use on video / camera, with the same peak-hold state machine as
+infer_smooth.py (instant escalation, dwell-gated de-escalation):
+
+    python rsi_detector.py --weights ../runs/detect/merged_v8s/weights/best.pt --source video.mp4
+    python rsi_detector.py --weights ... --source 0
+"""
+
+import argparse
+
+CLASSES = ["Smooth", "Normal", "Rough", "Pothole"]
+RSI = {"Smooth": 0.10, "Normal": 0.35, "Rough": 0.65, "Pothole": 0.95}
+
+POTHOLE, CRACK, ALLIGATOR = 0, 1, 2
+USED_CLASSES = [POTHOLE, CRACK, ALLIGATOR]
+CONF = 0.15               # min detection confidence to count a box
+POTHOLE_CONF = 0.25       # pothole boxes need more: low-confidence potholes were false alarms on real roads
+# Predicted crack boxes overlap and run larger than the labels (median ~1.8x
+# the labelled area in true-Normal frames), so predictions measure the union
+# of crack boxes and use a higher line than the 5% that defines Rough in the
+# labels. Tuned on the val split: Normal recall 0.56 -> 0.71 on test.
+ROUGH_CRACK_AREA = 0.07   # union of crack boxes covering >= this fraction -> Rough
+UNION_GRID = 64           # resolution of the union-area mask
+CONFIRM_K, CONFIRM_N = 3, 4   # a class counts once it (or worse) is seen in K of the last N frames
+
+
+class Confirmer:
+    """
+    Filters single-frame false alarms before the peak-hold state machine.
+    Returns the most severe class that appears (or is exceeded) in at least
+    k of the last n frames. k=n=1 passes every frame through unchanged.
+    Costs k-1 frames of delay on a real escalation (~33 ms at 30 fps for k=2).
+    """
+
+    def __init__(self, k=CONFIRM_K, n=CONFIRM_N):
+        from collections import deque
+        self.k = k
+        self.history = deque(maxlen=n)
+
+    def update(self, frame_class):
+        self.history.append(CLASSES.index(frame_class))
+        for level in range(len(CLASSES) - 1, 0, -1):
+            if sum(i >= level for i in self.history) >= self.k:
+                return CLASSES[level]
+        return CLASSES[0]
+
+
+def crack_area(boxes, union):
+    """boxes: (x, y, w, h) normalised. Sum of box areas, or area of their union."""
+    if not union:
+        return sum(w * h for _, _, w, h in boxes)
+    import numpy as np
+    g = UNION_GRID
+    mask = np.zeros((g, g), bool)
+    for x, y, w, h in boxes:
+        x0, x1 = int(max(0.0, x - w / 2) * g), int(np.ceil(min(1.0, x + w / 2) * g))
+        y0, y1 = int(max(0.0, y - h / 2) * g), int(np.ceil(min(1.0, y + h / 2) * g))
+        mask[y0:y1, x0:x1] = True
+    return float(mask.mean())
+
+
+def classify(boxes, conf=CONF, rough_area=ROUGH_CRACK_AREA, union=True, pothole_conf=POTHOLE_CONF):
+    """
+    boxes: iterable of (cls, conf, x, y, w, h) with x, y, w, h normalised to 0-1.
+    The defaults are the prediction rule. evaluate_rsi.py labels ground truth
+    with conf=0, rough_area=0.05, union=False (label boxes have conf 1.0).
+    Returns one of CLASSES.
+    """
+    kept = [(c, x, y, w, h) for c, p, x, y, w, h in boxes
+            if c in USED_CLASSES and p >= conf and (c != POTHOLE or p >= pothole_conf)]
+    if any(c == POTHOLE for c, *_ in kept):
+        return "Pothole"
+    cracks = [b[1:] for b in kept if b[0] in (CRACK, ALLIGATOR)]
+    if any(c == ALLIGATOR for c, *_ in kept) or crack_area(cracks, union) >= rough_area:
+        return "Rough"
+    if kept:
+        return "Normal"
+    return "Smooth"
+
+
+def boxes_from_result(result):
+    """Ultralytics Result -> list of (cls, conf, x, y, w, h) normalised."""
+    b = result.boxes
+    return [(int(c), float(p), *map(float, xywh))
+            for c, p, xywh in zip(b.cls, b.conf, b.xywhn)]
+
+
+def main():
+    import torch
+    from ultralytics import YOLO
+    from infer_smooth import SeverityStateMachine
+
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--weights", required=True)
+    ap.add_argument("--source", default="0", help="video path or camera index")
+    ap.add_argument("--save", help="optional output .mp4 with boxes and RSI overlay")
+    args = ap.parse_args()
+    source = int(args.source) if args.source.isdigit() else args.source
+
+    model = YOLO(args.weights)
+    # infer_smooth's state machine is written against config.CLASSES, which
+    # has the same Smooth < Normal < Rough < Pothole order as CLASSES here.
+    sm = SeverityStateMachine()
+    confirmer = Confirmer()
+    writer, frames_in = None, {c: 0 for c in CLASSES}
+    colours = {"Smooth": (80, 175, 76), "Normal": (0, 200, 255), "Rough": (0, 140, 255), "Pothole": (40, 40, 220)}
+
+    for i, result in enumerate(model.predict(source, stream=True, conf=CONF, classes=USED_CLASSES, verbose=False)):
+        frame_class = classify(boxes_from_result(result))
+        probs = torch.zeros(len(CLASSES))
+        probs[CLASSES.index(confirmer.update(frame_class))] = 1.0
+        stable, _, switched, reason = sm.update(probs)
+        frames_in[stable] += 1
+        if switched:
+            print(f"[frame {i}] {stable}  RSI={RSI[stable]:.2f}  ({reason})")
+
+        if args.save:
+            import cv2
+            img = result.plot()
+            if writer is None:
+                h, w = img.shape[:2]
+                fps = cv2.VideoCapture(source).get(cv2.CAP_PROP_FPS) or 30
+                writer = cv2.VideoWriter(args.save, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
+            cv2.rectangle(img, (0, 0), (img.shape[1], 50), colours[stable], -1)
+            cv2.putText(img, f"{stable}   RSI {RSI[stable]:.2f}   (frame: {frame_class})", (12, 36),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2, cv2.LINE_AA)
+            writer.write(img)
+
+    if writer is not None:
+        writer.release()
+    total = sum(frames_in.values())
+    print("Time in each road class: " + ", ".join(
+        f"{c} {100 * n / total:.0f}%" for c, n in frames_in.items()) if total else "No frames read.")
+
+
+if __name__ == "__main__":
+    main()
